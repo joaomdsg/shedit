@@ -1,0 +1,6 @@
+# All default rules on. Inline HTML is banned (MD033, default-on).
+# Tables are banned by the custom rule in .markdownlint/no-tables.js;
+# run: markdownlint -r .markdownlint/no-tables.js '**/*.md'
+default: true
+MD033: true
+no-tables: true
