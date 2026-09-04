@@ -139,7 +139,19 @@ Panel {
     if (editingId !== "" && !itemById(editingId)) editingId = ""
   }
 
+  // Inline editors take focus while open; hand it back so j/k/Esc work again.
+  onEditingIdChanged: if (editingId === "") keyCatcher.forceActiveFocus()
+  onInviteItemIdChanged: if (inviteItemId === "") keyCatcher.forceActiveFocus()
+
   Timer { interval: 60000; running: true; repeat: true; onTriggered: root.nowMs = Date.now() }
+
+  // A plugin reload destroys this item but not its child processes.
+  Component.onDestruction: {
+    restartTimer.stop()
+    watchProc.running = false
+    actionProc.running = false
+    pasteProc.running = false
+  }
 
   // ---- Processes -------------------------------------------------------
   Process {
@@ -246,7 +258,7 @@ Panel {
       onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveCursor(dy) }
       onActivateRequested: { var it = root.selectedItem(); if (it) root.run(["done", it.id]) }
       onReturnRequested: input.forceActiveFocus()
-      onCloseRequested: root.close()
+      onCloseRequested: root.menuId !== "" ? root.menuId = "" : root.close()
       onDeleteRequested: { var it = root.selectedItem(); if (it) root.askDelete(it.id) }
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
@@ -350,7 +362,7 @@ Panel {
                     if (!pasteProc.running) pasteProc.running = true
                     event.accepted = true
                   } else if (event.key === Qt.Key_Escape) {
-                    if (input.text === "" && root.pendingFiles.length === 0) root.close()
+                    if (input.text === "" && root.pendingFiles.length === 0) keyCatcher.forceActiveFocus()
                     else { input.text = ""; root.pendingFiles = [] }
                     event.accepted = true
                   }
@@ -530,10 +542,14 @@ Panel {
     id: confirm
     parent: keyCatcher
     anchors.fill: parent
+    z: 50
     message: "Delete this item and everything it holds?"
     confirmText: "Delete"
     foreground: root.foreground
     fontFamily: root.fontFamily
+    // The key catcher is blocked while this is open, so keys must land here.
+    Keys.onPressed: function(event) { if (handleKey(event)) event.accepted = true }
+    onOpenedChanged: opened ? forceActiveFocus() : keyCatcher.forceActiveFocus()
     onCanceled: { opened = false; root.deleteId = "" }
     onConfirmed: {
       if (root.deleteId) root.run(["delete", root.deleteId, "-y"])
