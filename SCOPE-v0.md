@@ -11,7 +11,8 @@ not here is not in v0.
   Done and archived are not counted.
 - Click the cluster and a panel opens (click again, Esc, or click-outside
   closes). Same convention as the other Omarchy panels.
-- The panel has a drop zone at the top and the board below.
+- The panel has a drop zone at the top, the top items per pile below, and
+  count-only chips for the rest. The full board is a separate overlay window.
 
 ## Drop zone
 
@@ -22,11 +23,12 @@ things dropped together are one item with several attachments.
 The raw input is written to disk before anything else happens. If that fails,
 the panel says so and nothing is dropped silently.
 
-## Board (in the panel)
+## Board (in the overlay)
 
-Items grouped by pile: `2min`, `deadline` (by date), `eventually`, `unsorted`.
-Failed extractions sit under `unsorted` with a retry. Each item shows its title
-and its one-line reason.
+Items grouped by pile: `2min`, `deadline` (by date), `eventually`, `unsorted`,
+plus `done`. Failed extractions sit under `unsorted` with a retry. Each item
+shows its title and its one-line reason. The panel previews only the top items
+of `2min` and `deadline`; everything below is reachable in the overlay.
 
 Per item you can:
 
@@ -35,12 +37,14 @@ Per item you can:
 - edit the title or summary (stored as your override, not a new extraction)
 - set or clear the deadline date (moves to or from `deadline` accordingly)
 - add or remove attachments (triggers re-extraction)
+- re-run the extraction by hand ("Re-extract")
 - archive
 - delete, after confirming (`-y` on the CLI); removes the item and every
   attachment file
 
-After you move something, a small, dismissable invite appears on that item
-asking for a one-sentence reason. Optional. If given, the sorter sees it.
+After you move something, a one-sentence reason can be recorded against that
+correction; if given, the sorter sees it. Optional. Only the `reason` CLI
+command surfaces this today -- the inline invite is not in the current UI.
 
 ## Sorting
 
@@ -52,8 +56,8 @@ with structured JSON output):
    confidence. Pile-blind. Result versioned and kept.
 2. **Sorter** takes the extraction, a compact board view, and your recent
    corrections (moves plus reasons) and returns pile, effort estimate, tags,
-   one-line reason. May propose a relation to another item; v0 shows the
-   proposal but does not act on it.
+   priority (0-100), one-line reason. May propose a relation to another item;
+   v0 shows the proposal but does not act on it.
 
 Hard rules run first and win: an explicit pile hint in the dump text, and a
 confidently parsed date, which always means `deadline` (a past one is shown as
@@ -62,6 +66,14 @@ re-extraction never overrides a pile you chose by hand.
 
 Both stages use Sonnet. Haiku was considered for the sorter and rejected: it
 has to tell your intent apart from the content of what you dumped.
+
+Priority is decoupled from pile: the sorter scores it 0-100, higher is
+sooner, and it orders items within a pile, highest first. `deadline` is the
+exception: overdue items always lead, then priority descending, then
+deadline ascending. Items never seen by the sorter (pre-priority items,
+backfilled on the v1→v2 schema migration) get a heuristic score instead: 90
+if the deadline is under 24h away, 70 if under a week, 50 for anything
+further out; failing that, 60 for a short (`<=5m`) estimate, else 30.
 
 ## Not in v0
 
@@ -94,10 +106,10 @@ Interface:
 
 ## Widget
 
-A user plugin under `~/.config/omarchy/plugins/<user>.shedit/`, kind
-`bar-widget`, following the Weather/Agents plugin shape: `BarWidget.qml`
-(dots) plus `Panel.qml` (drop zone and board). Lives in this repo and is
-symlinked into place.
+A user plugin under `~/.config/omarchy/plugins/<user>.shedit/`, kinds
+`bar-widget` and `overlay`, following the Weather/Agents plugin shape:
+`Panel.qml` (bar cluster plus drop zone and top items) and `Board.qml` (the
+full-board overlay window). Lives in this repo and is symlinked into place.
 
 ## Testing
 

@@ -5,18 +5,18 @@
   "version": "0.1.0",
   "author": "Joao Goncalves",
   "description": "Dump anything; glance at what is on your plate",
-  "kinds": ["bar-widget"],
-  "entryPoints": { "barWidget": "Panel.qml" },
+  "kinds": ["bar-widget", "overlay"],
+  "keepLoaded": true,
+  "entryPoints": { "barWidget": "Panel.qml", "overlay": "Board.qml" },
   "barWidget": {
     "displayName": "shedit",
-    "description": "Pile counts in the bar; drop zone and board in the panel",
+    "description": "Pile counts in the bar; drop zone in the panel, full board in an overlay",
     "category": "Productivity",
     "allowMultiple": false,
     "defaultSection": "right",
-    "defaults": { "binary": "shedit", "doneShown": 5 },
+    "defaults": { "binary": "shedit" },
     "schema": [
-      { "key": "binary", "type": "string", "label": "shedit binary", "description": "Path or name on PATH" },
-      { "key": "doneShown", "type": "number", "label": "Done items shown", "min": 0, "max": 50 }
+      { "key": "binary", "type": "string", "label": "shedit binary", "description": "Path or name on PATH" }
     ]
   }
 }

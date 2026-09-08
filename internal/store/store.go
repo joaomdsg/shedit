@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -64,6 +66,7 @@ type Item struct {
 	AllDay          bool
 	Estimate        string
 	Tags            []string
+	Priority        int
 	Error           string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
@@ -110,6 +113,7 @@ type Relation struct {
 type Sorting struct {
 	Estimate string
 	Tags     []string
+	Priority int
 }
 
 type ItemUpdate struct {
@@ -136,6 +140,7 @@ CREATE TABLE IF NOT EXISTS items (
   all_day INTEGER NOT NULL DEFAULT 0,
   estimate TEXT NOT NULL DEFAULT '',
   tags TEXT NOT NULL DEFAULT '[]',
+  priority INTEGER NOT NULL DEFAULT 0,
   error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -182,7 +187,7 @@ CREATE TABLE IF NOT EXISTS relations (
 
 // schemaVersion is stored in PRAGMA user_version so a future column change
 // can be detected and migrated instead of silently mismatching.
-const schemaVersion = 1
+const schemaVersion = 2
 
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
@@ -200,6 +205,12 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("database schema v%d is newer than this build (v%d)", have, schemaVersion)
 	}
+	if have >= 1 && have < 2 {
+		if err := migratePriority(db); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("migrate: %w", err)
+		}
+	}
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
@@ -209,6 +220,70 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+// migratePriority adds the priority column to a v1 database and backfills
+// existing rows from what they already have: a deadline or a small estimate
+// implies urgency; nothing at all implies none.
+func migratePriority(db *sql.DB) error {
+	if _, err := db.Exec(`ALTER TABLE items ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	rows, err := db.Query(`SELECT id, deadline, estimate FROM items`)
+	if err != nil {
+		return err
+	}
+	type row struct {
+		id       string
+		deadline *time.Time
+		estimate string
+	}
+	var out []row
+	for rows.Next() {
+		var id, estimate string
+		var deadline sql.NullString
+		if err := rows.Scan(&id, &deadline, &estimate); err != nil {
+			rows.Close()
+			return err
+		}
+		out = append(out, row{id: id, deadline: parseTimePtr(deadline), estimate: estimate})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	now := time.Now().UTC()
+	for _, r := range out {
+		p := PriorityHeuristic(r.deadline, r.estimate, now)
+		if _, err := db.Exec(`UPDATE items SET priority=? WHERE id=?`, p, r.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var shortEstimateRe = regexp.MustCompile(`^([0-9]+)m$`)
+
+// PriorityHeuristic stands in for the sorter when it never ran on an item:
+// deadline proximity dominates, a short estimate is the next best signal,
+// and everything else is left low but nonzero.
+func PriorityHeuristic(deadline *time.Time, estimate string, now time.Time) int {
+	if deadline != nil {
+		switch {
+		case deadline.Before(now.Add(24 * time.Hour)):
+			return 90
+		case deadline.Before(now.Add(7 * 24 * time.Hour)):
+			return 70
+		default:
+			return 50
+		}
+	}
+	if m := shortEstimateRe.FindStringSubmatch(estimate); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil && n <= 5 {
+			return 60
+		}
+	}
+	return 30
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -247,14 +322,14 @@ func (s *Store) CreateItem() (Item, error) {
 	return it, err
 }
 
-const itemCols = `id,status,pile,reason,title_override,summary_override,deadline,all_day,estimate,tags,error,created_at,updated_at,done_at`
+const itemCols = `id,status,pile,reason,title_override,summary_override,deadline,all_day,estimate,tags,priority,error,created_at,updated_at,done_at`
 
 func scanItem(sc interface{ Scan(...any) error }) (Item, error) {
 	var it Item
 	var deadline, doneAt sql.NullString
 	var tags, created, updated string
 	err := sc.Scan(&it.ID, &it.Status, &it.Pile, &it.Reason, &it.TitleOverride, &it.SummaryOverride,
-		&deadline, &it.AllDay, &it.Estimate, &tags, &it.Error, &created, &updated, &doneAt)
+		&deadline, &it.AllDay, &it.Estimate, &tags, &it.Priority, &it.Error, &created, &updated, &doneAt)
 	if err != nil {
 		return it, err
 	}
@@ -328,7 +403,11 @@ func (s *Store) SetSorting(id string, so Sorting) error {
 		so.Tags = []string{}
 	}
 	tags, _ := json.Marshal(so.Tags)
-	return s.touch(id, `estimate=?, tags=?`, so.Estimate, string(tags))
+	return s.touch(id, `estimate=?, tags=?, priority=?`, so.Estimate, string(tags), so.Priority)
+}
+
+func (s *Store) SetPriority(id string, priority int) error {
+	return s.touch(id, `priority=?`, priority)
 }
 
 func (s *Store) UpdateItem(id string, u ItemUpdate) error {

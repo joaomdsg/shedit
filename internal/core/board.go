@@ -39,6 +39,7 @@ type Item struct {
 	DeadlineLocal string       `json:"deadline_local,omitempty"`
 	Estimate      string       `json:"estimate,omitempty"`
 	Tags          []string     `json:"tags"`
+	Priority      int          `json:"priority"`
 	Error         string       `json:"error,omitempty"`
 	Processing    bool         `json:"processing"`
 	Attachments   []Attachment `json:"attachments"`
@@ -74,7 +75,7 @@ type Move struct {
 func (s *Service) buildItem(it store.Item) (Item, error) {
 	out := Item{
 		ID: it.ID, Status: it.Status, Pile: it.Pile, Reason: it.Reason,
-		Deadline: it.Deadline, AllDay: it.AllDay, Estimate: it.Estimate, Tags: it.Tags, Error: it.Error,
+		Deadline: it.Deadline, AllDay: it.AllDay, Estimate: it.Estimate, Tags: it.Tags, Priority: it.Priority, Error: it.Error,
 		CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt,
 		Attachments: []Attachment{},
 	}
@@ -175,8 +176,28 @@ func (s *Service) Snapshot() (Board, error) {
 			b.Counts.Other++
 		}
 	}
+	// Every pile leads with its highest-priority items; ties keep the pile's
+	// own order below.
+	for _, p := range store.Piles {
+		if p == store.PileDeadline {
+			continue
+		}
+		pile := b.Piles[p]
+		sort.SliceStable(pile, func(i, j int) bool { return pile[i].Priority > pile[j].Priority })
+	}
 	dl := b.Piles[store.PileDeadline]
-	sort.SliceStable(dl, func(i, j int) bool { return dl[i].Deadline.Before(*dl[j].Deadline) })
+	sort.SliceStable(dl, func(i, j int) bool {
+		oi := dl[i].Deadline != nil && dl[i].Deadline.Before(b.At)
+		oj := dl[j].Deadline != nil && dl[j].Deadline.Before(b.At)
+		if oi != oj {
+			// Overdue outranks everything else regardless of priority.
+			return oi
+		}
+		if dl[i].Priority != dl[j].Priority {
+			return dl[i].Priority > dl[j].Priority
+		}
+		return dl[i].Deadline.Before(*dl[j].Deadline)
+	})
 	sort.SliceStable(b.Done, func(i, j int) bool { return b.Done[i].UpdatedAt.After(b.Done[j].UpdatedAt) })
 	return b, nil
 }

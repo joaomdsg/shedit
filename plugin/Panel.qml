@@ -7,9 +7,11 @@ import qs.Ui
 import "Model.js" as Model
 
 // Bar widget and panel in one component, the way omarchy.agents does it. The
-// bar shows one glyph+count per non-empty pile; the panel holds a drop zone
-// and the board. Every action shells out to the shedit CLI, and the daemon's
-// `watch` stream is the only way state gets back in.
+// bar shows one glyph+count per non-empty pile; the panel holds the drop
+// zone, the top 3 of `2min`, the top 3 of `deadline`, and count-only chips
+// for the rest. The full board is a separate overlay window (Board.qml).
+// Every action shells out to the shedit CLI, and the daemon's `watch` stream
+// is the only way state gets back in.
 Panel {
   id: root
   moduleName: "jgonc.shedit"
@@ -22,7 +24,6 @@ Panel {
   readonly property color faint: Qt.darker(foreground, 1.6)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string binary: String(setting("binary", "shedit") || "shedit")
-  readonly property int doneShown: Math.max(0, parseInt(setting("doneShown", 5), 10) || 0)
 
   // ---- State fed by `shedit watch`.
   property var board: null
@@ -30,21 +31,21 @@ Panel {
   property string lastError: ""
   property double nowMs: Date.now()
 
-  readonly property var flat: Model.flatItems(board)
   readonly property bool pressing: Model.deadlinePressing(board, nowMs)
 
-  // ---- Panel interaction state. One selection shared by mouse and keys.
-  property bool cursorActive: false
-  property string selectedId: ""
+  // ---- Panel interaction state.
   property string editingId: ""
-  property string menuId: ""
-  property string inviteItemId: ""
-  property string deleteId: ""
+  property var pendingFiles: []
+  // Set while any drag (files) is anywhere over the panel, so the drop zone
+  // can light up even when the pointer isn't over it yet.
+  property bool panelDragOver: false
+  // Set while a task row is being dragged between piles. Distinct from
+  // panelDragOver (files) so the two drag kinds never light up each other's
+  // drop feedback.
   property string dragId: ""
   property string dragPile: ""
-  property var pendingFiles: []
 
-  readonly property bool inputFocused: input.activeFocus || editingId !== "" || inviteItemId !== "" || confirm.opened
+  readonly property bool inputFocused: input.activeFocus || editingId !== ""
 
   // ---- Actions ---------------------------------------------------------
   property var queue: []
@@ -83,40 +84,30 @@ Panel {
     pendingFiles = next
   }
 
+  // `done` is a status, not a pile: moving into it is a `done` RPC, wired
+  // separately at each drop site. This only ever re-piles.
   function moveItem(item, pile) {
     if (!item || item.pile === pile) return
     run(["move", item.id, pile])
-    menuId = ""
-    inviteItemId = item.id
   }
 
+  // Search every pile plus done for an item by id (only editingId lookups
+  // need this now, so a full scan each time is fine).
   function itemById(id) {
-    for (var i = 0; i < flat.length; i++) if (flat[i].id === id) return flat[i]
-    var done = board ? board.done : []
-    for (var j = 0; j < done.length; j++) if (done[j].id === id) return done[j]
+    if (!board) return null
+    for (var i = 0; i < Model.PILES.length; i++) {
+      var items = Model.pileItems(board, Model.PILES[i])
+      for (var j = 0; j < items.length; j++) if (items[j].id === id) return items[j]
+    }
+    var done = board.done || []
+    for (var k = 0; k < done.length; k++) if (done[k].id === id) return done[k]
     return null
   }
 
-  function selectedItem() { return itemById(selectedId) }
-
-  function moveCursor(dy) {
-    if (flat.length === 0) return
-    var idx = -1
-    for (var i = 0; i < flat.length; i++) if (flat[i].id === selectedId) idx = i
-    idx = Math.max(0, Math.min(flat.length - 1, idx + dy))
-    selectedId = flat[idx].id
-    cursorActive = true
-  }
-
-  function askDelete(id) {
-    deleteId = id
-    confirm.opened = true
-  }
-
-  function closeEditors() {
-    editingId = ""
-    menuId = ""
-    inviteItemId = ""
+  // Every "+N more" link and count chip shells out to the (not-yet-existing)
+  // board overlay via omarchy-shell, the same way BarWidget.qml's menu does.
+  function toggleFor(pile) {
+    if (root.bar) root.bar.run(Model.pileToggleCmd(pile))
   }
 
   function open() {
@@ -125,23 +116,16 @@ Panel {
   }
 
   function close() {
-    closeEditors()
+    editingId = ""
     controller.hide()
   }
 
-  // Keep the reason invite from lingering forever: the next board that shows
-  // the move already carries a reason, or the item vanished, dismisses it.
   onBoardChanged: {
-    if (inviteItemId !== "") {
-      var it = itemById(inviteItemId)
-      if (!it || (it.last_move && it.last_move.reason)) inviteItemId = ""
-    }
     if (editingId !== "" && !itemById(editingId)) editingId = ""
   }
 
-  // Inline editors take focus while open; hand it back so j/k/Esc work again.
+  // The inline editor takes focus while open; hand it back so Esc works again.
   onEditingIdChanged: if (editingId === "") keyCatcher.forceActiveFocus()
-  onInviteItemIdChanged: if (inviteItemId === "") keyCatcher.forceActiveFocus()
 
   Timer { interval: 60000; running: true; repeat: true; onTriggered: root.nowMs = Date.now() }
 
@@ -208,8 +192,8 @@ Panel {
   }
 
   // ---- Bar cluster -----------------------------------------------------
-  implicitWidth: cluster.implicitWidth
-  implicitHeight: cluster.implicitHeight
+  implicitWidth: clusterWrap.implicitWidth
+  implicitHeight: clusterWrap.implicitHeight
 
   readonly property var clusterModel: {
     var c = root.board ? root.board.counts : null
@@ -221,21 +205,48 @@ Panel {
     return out
   }
 
-  Row {
-    id: cluster
-    spacing: 0
-    Repeater {
-      model: root.clusterModel
-      WidgetButton {
-        required property var modelData
-        bar: root.bar
-        text: modelData.icon + (modelData.count ? " " + modelData.count : "")
-        active: modelData.alarm
-        opacity: modelData.dimmed && !modelData.alarm ? 0.5 : 1
-        horizontalMargin: 6
-        tooltipText: modelData.tip
-        onPressed: function(b) { root.toggle() }
+  // Counts-only row: unsorted, eventually, done. No item lists, just chips.
+  readonly property var chipModel: {
+    var b = root.board
+    return [
+      { pile: "eventually", icon: Model.ICON.eventually, count: b && b.counts ? (b.counts.other || 0) : 0 },
+      { pile: "unsorted", icon: Model.ICON.unsorted, count: b ? Model.pileItems(b, "unsorted").length : 0 },
+      { pile: "done", icon: Model.ICON.done, count: b ? (b.done || []).length : 0 }
+    ]
+  }
+
+  Item {
+    id: clusterWrap
+    implicitWidth: cluster.implicitWidth
+    implicitHeight: cluster.implicitHeight
+    width: implicitWidth
+    height: implicitHeight
+
+    Row {
+      id: cluster
+      spacing: 0
+      Repeater {
+        model: root.clusterModel
+        WidgetButton {
+          required property var modelData
+          bar: root.bar
+          text: modelData.icon + (modelData.count ? " " + modelData.count : "")
+          active: modelData.alarm
+          opacity: modelData.dimmed && !modelData.alarm ? 0.5 : 1
+          horizontalMargin: 6
+          tooltipText: modelData.tip
+          onPressed: function(b) { root.toggle() }
+        }
       }
+    }
+
+    // Hovering a drag (files or an in-progress item drag) over the bar
+    // opens the panel so its drop zone becomes reachable.
+    // TEMP DIAGNOSTIC: logging to confirm whether external DND even reaches
+    // this layer-shell surface. Remove once confirmed either way.
+    DropArea {
+      anchors.fill: parent
+      onEntered: { console.log("[shedit] bar DropArea entered, hasUrls=" + drag.hasUrls); if (!root.opened) root.open() }
     }
   }
 
@@ -250,23 +261,39 @@ Panel {
     contentWidth: panel.fittedContentWidth(Style.space(400))
     contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(680))
 
+    // Panel-wide drop target: lets the drop zone light up (and lets a drop
+    // land) anywhere over the panel, not just over the drop zone itself. It
+    // sits behind the key catcher/content below, so it never intercepts
+    // clicks on rows or chips.
+    DropArea {
+      anchors.fill: parent
+      keys: []
+      onEntered: if (root.dragId === "") root.panelDragOver = true
+      onExited: root.panelDragOver = false
+      onDropped: function(drop) {
+        if (root.dragId !== "") return
+        if (drop.hasUrls) {
+          var paths = []
+          for (var i = 0; i < drop.urls.length; i++) paths.push(Model.urlToPath(drop.urls[i]))
+          root.addFiles(paths)
+          drop.acceptProposedAction()
+        } else if (drop.hasText) {
+          input.text = (input.text ? input.text + "\n" : "") + drop.text
+          drop.acceptProposedAction()
+        }
+        root.panelDragOver = false
+        input.forceActiveFocus()
+      }
+    }
+
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
       blocked: root.inputFocused
 
-      onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveCursor(dy) }
-      onActivateRequested: { var it = root.selectedItem(); if (it) root.run(["done", it.id]) }
       onReturnRequested: input.forceActiveFocus()
-      onCloseRequested: root.menuId !== "" ? root.menuId = "" : root.close()
-      onDeleteRequested: { var it = root.selectedItem(); if (it) root.askDelete(it.id) }
+      onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      onTextKey: function(t) {
-        var it = root.selectedItem()
-        if (t === "e" && it) root.editingId = it.id
-        else if (t === "m" && it) root.menuId = it.id
-        else if (t === "i") input.forceActiveFocus()
-      }
 
       Flickable {
         id: flick
@@ -284,34 +311,17 @@ Panel {
           width: flick.width
           spacing: Style.space(12)
 
-          // ---------- Hero ----------
-          PanelHero {
-            width: parent.width
-            title: Model.heroTitle(root.board)
-            meta: Model.heroMeta(root.board)
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            iconComponent: Component {
-              Text {
-                textFormat: Text.PlainText
-                text: Model.ICON.brain
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.display
-              }
-            }
-          }
-
           // ---------- Drop zone ----------
           Rectangle {
             id: dropZone
             width: parent.width
             implicitHeight: dropColumn.implicitHeight + Style.space(16)
             radius: Style.cornerRadius
-            readonly property bool hot: dropArea.containsDrag || input.activeFocus
+            readonly property bool dragOver: (dropArea.containsDrag || root.panelDragOver) && root.dragId === ""
+            readonly property bool hot: dragOver || input.activeFocus
             color: hot ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
             border.width: 1
-            border.color: dropArea.containsDrag ? Color.accent : Util.alpha(root.foreground, input.activeFocus ? 0.45 : 0.2)
+            border.color: dragOver ? Color.accent : Util.alpha(root.foreground, input.activeFocus ? 0.45 : 0.2)
             Behavior on border.color { ColorAnimation { duration: 60 } }
             Behavior on color { ColorAnimation { duration: 60 } }
 
@@ -320,6 +330,7 @@ Panel {
               anchors.fill: parent
               keys: []
               onDropped: function(drop) {
+                if (root.dragId !== "") return
                 if (drop.hasUrls) {
                   var paths = []
                   for (var i = 0; i < drop.urls.length; i++) paths.push(Model.urlToPath(drop.urls[i]))
@@ -420,21 +431,22 @@ Panel {
                 }
               }
 
+              // Persistent hint: doubles as the drop hint and the paste hint,
+              // and swaps to a release message while something is dragged
+              // over the panel.
+              Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                textFormat: Text.PlainText
+                text: dropZone.dragOver ? "Release to add" : (Model.ICON.attach + "  Drop / paste (Ctrl+V)")
+                color: dropZone.dragOver ? root.foreground : root.faint
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
               Item {
                 width: parent.width
                 height: sendButton.implicitHeight
-                Text {
-                  textFormat: Text.PlainText
-                  text: dropArea.containsDrag ? "Drop to attach" : "Drop files here · Ctrl+V pastes an image"
-                  color: root.faint
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  anchors.left: parent.left
-                  anchors.right: sendButton.left
-                  anchors.rightMargin: Style.space(8)
-                  anchors.verticalCenter: parent.verticalCenter
-                  elide: Text.ElideRight
-                }
                 Button {
                   id: sendButton
                   anchors.right: parent.right
@@ -473,9 +485,9 @@ Panel {
             }
           }
 
-          // ---------- Piles ----------
+          // ---------- 2min / deadline: top 3 + "more" ----------
           Repeater {
-            model: Model.PILES
+            model: ["2min", "deadline"]
             Section {
               required property string modelData
               width: column.width
@@ -483,26 +495,18 @@ Panel {
             }
           }
 
-          // ---------- Done ----------
-          Column {
+          // ---------- Counts: unsorted / eventually / done ----------
+          PanelSeparator { width: parent.width; foreground: root.foreground }
+          Row {
             width: parent.width
-            spacing: Style.space(4)
-            visible: root.doneShown > 0 && root.board && root.board.done.length > 0
-
-            PanelSeparator { width: parent.width; foreground: root.foreground }
-            PanelSectionHeader {
-              width: parent.width
-              text: "DONE"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
+            spacing: Style.space(8)
             Repeater {
-              model: root.board ? root.board.done.slice(0, root.doneShown) : []
-              ItemRow {
+              model: root.chipModel
+              PileChip {
                 required property var modelData
-                width: column.width
-                item: modelData
-                done: true
+                pile: modelData.pile
+                icon: modelData.icon
+                count: modelData.count
               }
             }
           }
@@ -514,15 +518,22 @@ Panel {
         id: ghost
         visible: root.dragId !== ""
         z: 100
-        width: ghostText.implicitWidth + Style.space(20)
+        width: Math.min(ghostText.implicitWidth, Style.space(240)) + Style.space(20)
         height: ghostText.implicitHeight + Style.space(10)
         radius: Style.cornerRadius
         color: Style.selectedFillFor(root.foreground, Color.accent)
         opacity: 0.85
         Drag.active: root.dragId !== ""
         Drag.keys: ["shedit/item"]
-        Drag.hotSpot.x: width / 2
-        Drag.hotSpot.y: height / 2
+        // The hot spot must NOT depend on the ghost's own size: the label (and
+        // so the width) only becomes known after the drag activates, and a
+        // width-relative hot spot would then jump the reported drag point half
+        // a ghost to the right of the cursor -- enough to light up, and drop
+        // into, the neighbouring chip. A fixed inset keeps the drag point
+        // pinned to the cursor no matter how wide the title is.
+        Drag.hotSpot.x: ghost.grabInset
+        Drag.hotSpot.y: ghost.grabInset
+        readonly property real grabInset: Style.space(10)
         Text {
           id: ghostText
           textFormat: Text.PlainText
@@ -538,124 +549,182 @@ Panel {
     }
   }
 
-  ConfirmDialog {
-    id: confirm
-    parent: keyCatcher
-    anchors.fill: parent
-    z: 50
-    message: "Delete this item and everything it holds?"
-    confirmText: "Delete"
-    foreground: root.foreground
-    fontFamily: root.fontFamily
-    // The key catcher is blocked while this is open, so keys must land here.
-    Keys.onPressed: function(event) { if (handleKey(event)) event.accepted = true }
-    onOpenedChanged: opened ? forceActiveFocus() : keyCatcher.forceActiveFocus()
-    onCanceled: { opened = false; root.deleteId = "" }
-    onConfirmed: {
-      if (root.deleteId) root.run(["delete", root.deleteId, "-y"])
-      opened = false
-      root.deleteId = ""
+  // ---- One count chip: icon + count, click toggles the board overlay ----
+  component PileChip: Rectangle {
+    id: chip
+    required property string pile
+    required property string icon
+    required property int count
+    // Any task drag in progress, other than one originating from this same
+    // pile, makes this chip a valid target and marks it as such.
+    readonly property bool dragAvailable: root.dragId !== "" && root.dragPile !== chip.pile
+    readonly property bool dropHot: chipDrop.containsDrag && chip.dragAvailable
+    implicitWidth: chipRow.implicitWidth + Style.space(16)
+    implicitHeight: chipRow.implicitHeight + Style.space(8)
+    radius: Style.cornerRadius
+    color: (chip.dropHot || chipMouse.containsMouse) ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
+    border.width: 1
+    border.color: chip.dropHot ? Color.accent : (chip.dragAvailable ? Util.alpha(Color.accent, 0.4) : Util.alpha(root.foreground, 0.2))
+    Behavior on color { ColorAnimation { duration: 60 } }
+    Behavior on border.color { ColorAnimation { duration: 90 } }
+
+    MouseArea {
+      id: chipMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.toggleFor(chip.pile)
+    }
+
+    DropArea {
+      id: chipDrop
+      anchors.fill: parent
+      keys: ["shedit/item"]
+      onDropped: function(drop) {
+        if (!chip.dragAvailable) return
+        var it = root.itemById(root.dragId)
+        if (!it) return
+        if (chip.pile === "done") root.run(["done", it.id])
+        else root.moveItem(it, chip.pile)
+        drop.accept()
+      }
+    }
+
+    Row {
+      id: chipRow
+      anchors.centerIn: parent
+      spacing: Style.space(6)
+      Text {
+        textFormat: Text.PlainText
+        text: chip.icon
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        anchors.verticalCenter: parent.verticalCenter
+      }
+      Text {
+        textFormat: Text.PlainText
+        text: Model.CHIP_LABEL[chip.pile] || chip.pile.toUpperCase()
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        anchors.verticalCenter: parent.verticalCenter
+      }
+      Text {
+        textFormat: Text.PlainText
+        text: String(chip.count)
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        anchors.verticalCenter: parent.verticalCenter
+      }
     }
   }
 
-  // ---- One pile: header, drop target, rows ------------------------------
+  // ---- One pile: header, top 3 rows, "+N more" link ---------------------
   component Section: Column {
     id: section
     required property string pile
     readonly property var items: Model.pileItems(root.board, pile)
-    readonly property bool dropHot: sectionDrop.containsDrag && root.dragPile !== pile
+    readonly property var visibleItems: items.slice(0, 3)
+    readonly property int moreCount: Math.max(0, items.length - 3)
+    // Any task drag in progress, other than one originating from this same
+    // pile, makes the header a valid drop target and marks it as such.
+    readonly property bool dragAvailable: root.dragId !== "" && root.dragPile !== pile
+    readonly property bool dropHot: headerDrop.containsDrag && section.dragAvailable
     spacing: Style.space(4)
-    visible: items.length > 0 || pile === "unsorted" || root.dragId !== ""
+    visible: items.length > 0
 
     PanelSeparator { width: parent.width; foreground: root.foreground }
 
+    // Drop target is scoped to the header, not the whole section: rows are
+    // clickable now (open the inline editor), so only the header lights up
+    // and accepts a drop.
     Rectangle {
+      id: headerRect
       width: parent.width
-      implicitHeight: body.implicitHeight
+      implicitHeight: headerRow.implicitHeight + Style.space(4)
       radius: Style.cornerRadius
       color: section.dropHot ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
-      border.width: section.dropHot ? 1 : 0
-      border.color: Color.accent
+      border.width: (section.dropHot || section.dragAvailable) ? 1 : 0
+      border.color: section.dropHot ? Color.accent : Util.alpha(Color.accent, 0.4)
       Behavior on color { ColorAnimation { duration: 60 } }
+      Behavior on border.color { ColorAnimation { duration: 90 } }
 
       DropArea {
-        id: sectionDrop
+        id: headerDrop
         anchors.fill: parent
         keys: ["shedit/item"]
         onDropped: function(drop) {
-          var it = root.itemById(root.dragId)
-          root.moveItem(it, section.pile)
+          if (!section.dragAvailable) return
+          root.moveItem(root.itemById(root.dragId), section.pile)
           drop.accept()
         }
       }
 
-      Column {
-        id: body
+      Row {
+        id: headerRow
         width: parent.width
-        spacing: Style.space(2)
-
-        Row {
-          width: parent.width
-          spacing: Style.space(6)
-          Text {
-            textFormat: Text.PlainText
-            text: Model.PILE_ICON[section.pile]
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            anchors.verticalCenter: parent.verticalCenter
-          }
-          PanelSectionHeader {
-            width: parent.width - Style.space(20)
-            text: Model.PILE_LABEL[section.pile] + (section.items.length ? "  " + section.items.length : "")
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            anchors.verticalCenter: parent.verticalCenter
-          }
-        }
-
+        spacing: Style.space(6)
+        anchors.verticalCenter: parent.verticalCenter
         Text {
-          visible: section.items.length === 0
           textFormat: Text.PlainText
-          text: root.dragId !== "" ? "Drop here" : "Nothing here"
-          color: root.faint
+          text: Model.PILE_ICON[section.pile]
+          color: root.dim
           font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          leftPadding: Style.space(10)
-          topPadding: Style.space(4)
-          bottomPadding: Style.space(6)
+          font.pixelSize: Style.font.caption
+          anchors.verticalCenter: parent.verticalCenter
         }
+        PanelSectionHeader {
+          width: parent.width - Style.space(20)
+          text: Model.PILE_LABEL[section.pile] + "  " + section.items.length
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          anchors.verticalCenter: parent.verticalCenter
+        }
+      }
+    }
 
-        Repeater {
-          model: section.items
-          ItemRow {
-            required property var modelData
-            width: body.width
-            item: modelData
-          }
-        }
+    Repeater {
+      model: section.visibleItems
+      ItemRow {
+        required property var modelData
+        width: section.width
+        item: modelData
+      }
+    }
+
+    Text {
+      visible: section.moreCount > 0
+      textFormat: Text.PlainText
+      text: "+" + section.moreCount + " more"
+      color: root.faint
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      leftPadding: Style.space(10)
+      topPadding: Style.space(2)
+      bottomPadding: Style.space(4)
+
+      MouseArea {
+        anchors.fill: parent
+        cursorShape: Qt.PointingHandCursor
+        onClicked: root.toggleFor(section.pile)
       }
     }
   }
 
-  // ---- One item -------------------------------------------------------
+  // ---- One item: title + a single meta line ----------------------------
   component ItemRow: CursorSurface {
     id: row
     required property var item
-    property bool done: false
-    readonly property bool selected: root.selectedId === item.id
     readonly property bool editing: root.editingId === item.id
-    readonly property bool menuOpen: root.menuId === item.id
-    readonly property bool inviting: root.inviteItemId === item.id && !!item.last_move && !item.last_move.reason
-    readonly property bool failed: !!item.error
-    readonly property bool overdue: Model.isOverdue(item, root.nowMs) && !done
-    readonly property bool showActions: (rowMouse.containsMouse || (root.cursorActive && selected)) && root.dragId === ""
+    readonly property bool overdue: Model.isOverdue(item, root.nowMs)
 
-    hasCursor: root.cursorActive && selected && root.dragId === ""
+    hasCursor: rowMouse.containsMouse
     foreground: root.foreground
     accent: Color.accent
-    opacity: done ? 0.55 : (root.dragId === item.id ? 0.35 : 1)
-    implicitHeight: rowBody.implicitHeight + extras.implicitHeight + (extras.visible ? Style.space(6) : 0)
+    opacity: root.dragId === item.id ? 0.35 : 1
+    implicitHeight: rowBody.implicitHeight + (editor.visible ? editor.implicitHeight + Style.space(6) : 0)
 
     MouseArea {
       id: rowMouse
@@ -664,22 +733,18 @@ Panel {
       anchors.top: parent.top
       height: rowBody.implicitHeight
       hoverEnabled: true
-      acceptedButtons: Qt.LeftButton | Qt.RightButton
       cursorShape: Qt.PointingHandCursor
-      drag.target: row.done ? null : ghost
+      drag.target: ghost
       drag.threshold: Style.space(8)
       drag.smoothed: false
 
-      onContainsMouseChanged: if (containsMouse) { root.cursorActive = true; root.selectedId = row.item.id }
       onPressed: function(mouse) {
-        root.cursorActive = true
-        root.selectedId = row.item.id
         var p = rowMouse.mapToItem(keyCatcher, mouse.x, mouse.y)
-        ghost.x = p.x - ghost.width / 2
-        ghost.y = p.y - ghost.height / 2
+        ghost.x = p.x - ghost.grabInset
+        ghost.y = p.y - ghost.grabInset
       }
       drag.onActiveChanged: {
-        if (drag.active) { root.dragId = row.item.id; root.dragPile = row.item.pile; root.closeEditors() }
+        if (drag.active) { root.dragId = row.item.id; root.dragPile = row.item.pile; root.editingId = "" }
       }
       onReleased: function(mouse) {
         if (root.dragId === row.item.id) {
@@ -688,192 +753,74 @@ Panel {
           root.dragPile = ""
         }
       }
-      onClicked: function(mouse) {
-        if (mouse.button === Qt.RightButton) {
-          if (!row.done) root.menuId = row.menuOpen ? "" : row.item.id
-          return
-        }
-        if (row.done) return
-        root.editingId = row.editing ? "" : row.item.id
-        root.menuId = ""
-      }
+      onClicked: root.editingId = row.editing ? "" : row.item.id
     }
 
-    Item {
+    Column {
       id: rowBody
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.top: parent.top
       anchors.leftMargin: Style.space(10)
-      anchors.rightMargin: Style.space(6)
-      implicitHeight: Math.max(info.implicitHeight, actions.implicitHeight) + Style.space(10)
+      anchors.rightMargin: Style.space(24)
+      topPadding: Style.space(4)
+      bottomPadding: Style.space(4)
+      spacing: Style.space(2)
 
-      Column {
-        id: info
-        anchors.left: parent.left
-        anchors.right: actions.visible ? actions.left : parent.right
-        anchors.rightMargin: Style.space(8)
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: Style.space(2)
-
-        Row {
-          width: parent.width
-          spacing: Style.space(6)
-          Text {
-            visible: row.failed || row.item.processing
-            textFormat: Text.PlainText
-            text: row.failed ? Model.ICON.alert : Model.ICON.retry
-            color: row.failed ? root.urgent : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            anchors.verticalCenter: parent.verticalCenter
-            RotationAnimator on rotation {
-              running: row.item.processing && !row.failed
-              from: 0; to: 360; duration: 1200; loops: Animation.Infinite
-            }
-          }
-          Text {
-            textFormat: Text.PlainText
-            width: parent.width - (row.failed || row.item.processing ? Style.space(22) : 0)
-            text: Model.displayTitle(row.item)
-            color: row.done ? root.dim : root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            font.strikeout: row.done
-            elide: Text.ElideRight
-            anchors.verticalCenter: parent.verticalCenter
-          }
-        }
-
-        Text {
-          width: parent.width
-          visible: text !== ""
-          textFormat: Text.PlainText
-          text: Model.subline(row.item)
-          color: row.failed || row.overdue ? root.urgent : root.faint
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          elide: Text.ElideRight
-          maximumLineCount: 1
-        }
+      Text {
+        width: parent.width
+        textFormat: Text.PlainText
+        text: Model.displayTitle(row.item)
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        elide: Text.ElideRight
       }
 
-      Row {
-        id: actions
-        anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: Style.space(2)
-        visible: row.showActions
-        PanelActionButton {
-          visible: row.failed
-          iconText: Model.ICON.retry
-          tooltipText: "Retry"
-          foreground: root.dim
-          hoverColor: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: root.run(["retry", row.item.id])
-        }
-        PanelActionButton {
-          visible: !row.done && !row.failed
-          iconText: Model.ICON.edit
-          tooltipText: "Edit"
-          foreground: root.dim
-          hoverColor: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: { root.editingId = row.editing ? "" : row.item.id; root.menuId = "" }
-        }
-        PanelActionButton {
-          iconText: row.done ? Model.ICON.reopen : Model.ICON.done
-          tooltipText: row.done ? "Reopen" : "Done"
-          foreground: root.dim
-          hoverColor: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: root.run([row.done ? "reopen" : "done", row.item.id])
-        }
-        PanelActionButton {
-          iconText: Model.ICON.trash
-          tooltipText: "Delete"
-          foreground: root.dim
-          hoverColor: root.urgent
-          fontFamily: root.fontFamily
-          onClicked: root.askDelete(row.item.id)
-        }
+      Text {
+        width: parent.width
+        visible: text !== ""
+        textFormat: Text.PlainText
+        text: Model.subline(row.item)
+        color: row.overdue ? root.urgent : root.faint
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        elide: Text.ElideRight
+        maximumLineCount: 1
       }
     }
 
-    // Anything that expands under the row: pile menu, reason invite, editor.
-    Column {
-      id: extras
+    // Only quick action left in the widget; everything else lives in the board overlay.
+    PanelActionButton {
+      iconText: Model.ICON.done
+      tooltipText: "Done"
+      // rowMouse loses hover while the pointer is over this button, so track our own.
+      property bool selfHover: false
+      opacity: rowMouse.containsMouse || selfHover ? 1 : 0
+      onHovered: isHovered => selfHover = isHovered
+      foreground: root.dim
+      hoverColor: Color.accent
+      fontFamily: root.fontFamily
+      fontSize: Style.font.bodySmall
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(6)
+      anchors.top: parent.top
+      anchors.topMargin: Style.space(4)
+      onClicked: root.run(["done", row.item.id])
+
+      Behavior on opacity { NumberAnimation { duration: 90 } }
+    }
+
+    Editor {
+      id: editor
+      visible: row.editing
+      anchors.top: rowBody.bottom
+      anchors.topMargin: Style.space(6)
       anchors.left: parent.left
       anchors.right: parent.right
-      anchors.top: rowBody.bottom
       anchors.leftMargin: Style.space(10)
       anchors.rightMargin: Style.space(10)
-      spacing: Style.space(6)
-      visible: row.menuOpen || row.inviting || row.editing
-
-      Row {
-        visible: row.menuOpen
-        spacing: Style.space(4)
-        Text {
-          textFormat: Text.PlainText
-          text: "MOVE TO"
-          color: root.faint
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          font.letterSpacing: 1
-          anchors.verticalCenter: parent.verticalCenter
-          rightPadding: Style.space(4)
-        }
-        Repeater {
-          model: Model.PILES
-          Button {
-            required property string modelData
-            text: Model.PILE_ICON[modelData] + " " + modelData
-            foreground: root.foreground
-            fontSize: Style.font.caption
-            selected: modelData === row.item.pile
-            enabled: modelData !== row.item.pile
-            opacity: enabled ? 1 : 0.4
-            onClicked: root.moveItem(row.item, modelData)
-          }
-        }
-      }
-
-      Row {
-        visible: row.inviting
-        width: parent.width
-        spacing: Style.space(6)
-        TextField {
-          id: reasonField
-          width: parent.width - Style.space(24)
-          placeholderText: "Why? One sentence, optional"
-          foreground: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          Keys.onPressed: function(event) {
-            if (event.key === Qt.Key_Escape) { root.inviteItemId = ""; event.accepted = true }
-            else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-              var t = text.trim()
-              if (t !== "" && row.item.last_move) root.run(["reason", row.item.last_move.id, t])
-              root.inviteItemId = ""
-              event.accepted = true
-            }
-          }
-          onVisibleChanged: if (visible) { text = ""; forceActiveFocus() }
-        }
-        PanelActionButton {
-          iconText: Model.ICON.close
-          tooltipText: "Skip"
-          foreground: root.dim
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          anchors.verticalCenter: parent.verticalCenter
-          onClicked: root.inviteItemId = ""
-        }
-      }
-
-      Editor { visible: row.editing; width: parent.width; item: row.item }
+      item: row.item
     }
   }
 
@@ -960,15 +907,19 @@ Panel {
       width: parent.width
       implicitHeight: attachColumn.implicitHeight + Style.space(12)
       radius: Style.cornerRadius
-      color: attachDrop.containsDrag ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
+      // A task drag passing over the editor must not light this up: only
+      // file drags can attach.
+      readonly property bool attachHot: attachDrop.containsDrag && root.dragId === ""
+      color: attachHot ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
       border.width: 1
-      border.color: attachDrop.containsDrag ? Color.accent : Util.alpha(root.foreground, 0.15)
+      border.color: attachHot ? Color.accent : Util.alpha(root.foreground, 0.15)
 
       DropArea {
         id: attachDrop
         anchors.fill: parent
         keys: []
         onDropped: function(drop) {
+          if (root.dragId !== "") return
           if (!drop.hasUrls) return
           var argv = ["attach", editor.item.id]
           for (var i = 0; i < drop.urls.length; i++) argv.push(Model.urlToPath(drop.urls[i]))
@@ -1025,7 +976,7 @@ Panel {
 
         Text {
           textFormat: Text.PlainText
-          text: attachDrop.containsDrag ? "Drop to attach" : "Drop files here to attach"
+          text: attachDrop.containsDrag && root.dragId === "" ? "Drop to attach" : "Drop files here to attach"
           color: root.faint
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
