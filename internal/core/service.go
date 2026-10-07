@@ -326,18 +326,7 @@ func (s *Service) runPipeline(ctx context.Context, id string) error {
 		// The rules already placed it; losing estimate and tags is not
 		// worth failing the item over.
 		s.opts.Logger.Printf("item %s: sorter: %v", id, err)
-		it, gerr := s.store.GetItem(id)
-		if gerr != nil {
-			return gerr
-		}
-		deadline := it.Deadline
-		if dec.Deadline != nil {
-			deadline = &dec.Deadline.Time
-		}
-		if err := s.store.SetPriority(id, store.PriorityHeuristic(deadline, it.Estimate, s.now())); err != nil {
-			return err
-		}
-		return s.place(id, dec.Pile, dec.Reason, dec.Deadline, store.ActorSystem)
+		return s.placeByRules(id, dec)
 	}
 	if err := s.store.SetSorting(id, store.Sorting{Estimate: sr.Estimate, Tags: sr.Tags, Priority: sr.Priority}); err != nil {
 		return err
@@ -349,6 +338,21 @@ func (s *Service) runPipeline(ctx context.Context, id string) error {
 	}
 	pile, reason := choosePile(sr, dec)
 	return s.place(id, pile, reason, dec.Deadline, store.ActorSystem)
+}
+
+func (s *Service) placeByRules(id string, dec rules.Decision) error {
+	it, err := s.store.GetItem(id)
+	if err != nil {
+		return err
+	}
+	deadline := it.Deadline
+	if dec.Deadline != nil {
+		deadline = &dec.Deadline.Time
+	}
+	if err := s.store.SetPriority(id, store.PriorityHeuristic(deadline, it.Estimate, s.now())); err != nil {
+		return err
+	}
+	return s.place(id, dec.Pile, dec.Reason, dec.Deadline, store.ActorSystem)
 }
 
 func choosePile(sr sorter.Result, dec rules.Decision) (pile, reason string) {
