@@ -289,27 +289,10 @@ func (s *Service) process(id string) {
 }
 
 func (s *Service) runPipeline(ctx context.Context, id string) error {
-	atts, err := s.store.ListAttachments(id)
+	res, userText, err := s.extractStage(ctx, id)
 	if err != nil {
 		return err
 	}
-	if len(atts) == 0 {
-		return errors.New("no attachments")
-	}
-	userText, eatts, err := s.extractorInputs(atts)
-	if err != nil {
-		return err
-	}
-
-	res, resp, err := extract.Run(ctx, s.model, s.opts.ExtractModel, eatts, s.now())
-	s.addCost(resp)
-	if err != nil {
-		return fmt.Errorf("extract: %w", err)
-	}
-	if _, err := s.store.AddExtraction(id, store.Extraction{Model: resp.Model, JSON: string(resp.Output)}); err != nil {
-		return err
-	}
-	s.publish()
 
 	dec := rules.Apply(rules.Input{Text: userText, Dates: res.ParsedDates(s.Location())}, s.now())
 
@@ -338,6 +321,30 @@ func (s *Service) runPipeline(ctx context.Context, id string) error {
 	}
 	pile, reason := choosePile(sr, dec)
 	return s.place(id, pile, reason, dec.Deadline, store.ActorSystem)
+}
+
+func (s *Service) extractStage(ctx context.Context, id string) (res extract.Result, userText string, err error) {
+	atts, err := s.store.ListAttachments(id)
+	if err != nil {
+		return res, "", err
+	}
+	if len(atts) == 0 {
+		return res, "", errors.New("no attachments")
+	}
+	userText, eatts, err := s.extractorInputs(atts)
+	if err != nil {
+		return res, "", err
+	}
+	res, resp, err := extract.Run(ctx, s.model, s.opts.ExtractModel, eatts, s.now())
+	s.addCost(resp)
+	if err != nil {
+		return res, "", fmt.Errorf("extract: %w", err)
+	}
+	if _, err := s.store.AddExtraction(id, store.Extraction{Model: resp.Model, JSON: string(resp.Output)}); err != nil {
+		return res, "", err
+	}
+	s.publish()
+	return res, userText, nil
 }
 
 func (s *Service) placeByRules(id string, dec rules.Decision) error {
