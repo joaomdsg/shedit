@@ -42,12 +42,16 @@ func newFixture(t *testing.T) *fixture {
 	return &fixture{svc: svc, fake: fake, st: st, bl: bl, root: root}
 }
 
+// stubEvidence is an action every ext() extraction carries, so srt() results
+// pass the sorter's evidence check.
+const stubEvidence = "handle it"
+
 func ext(title string, dates ...extract.Date) extract.Result {
-	return extract.Result{Title: title, Summary: "sum " + title, Dates: dates, SizeGuess: "small", Confidence: 0.9}
+	return extract.Result{Title: title, Summary: "sum " + title, Dates: dates, SizeGuess: "small", Confidence: 0.9, Actions: []string{stubEvidence}}
 }
 
 func srt(pile, reason string) sorter.Result {
-	return sorter.Result{Pile: pile, Estimate: "10m", Tags: []string{"t"}, Reason: reason}
+	return sorter.Result{Pile: pile, Estimate: "10m", Tags: []string{"t"}, Reason: reason, Confidence: 0.9, Evidence: stubEvidence}
 }
 
 func TestDumpTextRunsBothStagesAndPlacesItem(t *testing.T) {
@@ -150,7 +154,7 @@ func TestPileHintWinsOverSorter(t *testing.T) {
 
 func TestConfidentFutureDateMeansDeadline(t *testing.T) {
 	f := newFixture(t)
-	f.fake.Queue(ext("Dentist", extract.Date{Date: "2026-09-10", Confident: true})).Queue(srt("eventually", "meh"))
+	f.fake.Queue(ext("Dentist", extract.Date{Date: "2026-09-10", Confident: true, Kind: when.KindDue})).Queue(srt("deadline", "meh"))
 	id, _ := f.svc.Dump(context.Background(), DumpInput{Text: "dentist on the 10th"})
 	it, _ := f.st.GetItem(id)
 	if it.Pile != "deadline" || it.Deadline == nil || it.Deadline.Day() != 10 || !it.AllDay {
@@ -164,7 +168,7 @@ func TestConfidentFutureDateMeansDeadline(t *testing.T) {
 
 func TestTimedDateIsLocalAndDueTodayCounts(t *testing.T) {
 	f := newFixture(t)
-	f.fake.Queue(ext("Call", extract.Date{Date: "2026-09-04T15:00", Confident: true})).Queue(srt("2min", "meh"))
+	f.fake.Queue(ext("Call", extract.Date{Date: "2026-09-04T15:00", Confident: true, Kind: when.KindDue})).Queue(srt("deadline", "meh"))
 	id, _ := f.svc.Dump(context.Background(), DumpInput{Text: "call at 3"})
 	it, _ := f.st.GetItem(id)
 	if it.Pile != "deadline" || it.Deadline == nil || it.Deadline.In(lisbon).Hour() != 15 || it.AllDay {
@@ -175,7 +179,7 @@ func TestTimedDateIsLocalAndDueTodayCounts(t *testing.T) {
 		t.Fatalf("%q", b.Piles["deadline"][0].DeadlineLocal)
 	}
 	// An all-day date for today is still a deadline at 10:00.
-	f.fake.Queue(ext("Today", extract.Date{Date: "2026-09-04", Confident: true})).Queue(srt("2min", "meh"))
+	f.fake.Queue(ext("Today", extract.Date{Date: "2026-09-04", Confident: true, Kind: when.KindDue})).Queue(srt("deadline", "meh"))
 	id, _ = f.svc.Dump(context.Background(), DumpInput{Text: "today"})
 	it, _ = f.st.GetItem(id)
 	if it.Pile != "deadline" {
@@ -189,7 +193,7 @@ func TestTimedDateIsLocalAndDueTodayCounts(t *testing.T) {
 
 func TestUnconfidentDateLeftToSorter(t *testing.T) {
 	f := newFixture(t)
-	f.fake.Queue(ext("Old article", extract.Date{Date: "2026-09-10", Confident: false})).Queue(srt("eventually", "reading"))
+	f.fake.Queue(ext("Old article", extract.Date{Date: "2026-09-10", Confident: false, Kind: when.KindDue})).Queue(srt("eventually", "reading"))
 	id, _ := f.svc.Dump(context.Background(), DumpInput{Text: "x"})
 	it, _ := f.st.GetItem(id)
 	if it.Pile != "eventually" || it.Deadline != nil {
@@ -270,7 +274,7 @@ func TestRelationProposalIsRecordedNotActedOn(t *testing.T) {
 	f := newFixture(t)
 	f.fake.Queue(ext("Flight")).Queue(srt("deadline", "x"))
 	a, _ := f.svc.Dump(context.Background(), DumpInput{Text: "flight"})
-	f.fake.Queue(ext("Hotel")).Queue(sorter.Result{Pile: "eventually", Reason: "y", RelatedID: a, RelatedReason: "same trip"})
+	f.fake.Queue(ext("Hotel")).Queue(sorter.Result{Pile: "eventually", Reason: "y", RelatedID: a, RelatedReason: "same trip", Confidence: 0.9, Evidence: stubEvidence})
 	b, _ := f.svc.Dump(context.Background(), DumpInput{Text: "hotel"})
 	snap, _ := f.svc.Snapshot()
 	var hotel Item
@@ -356,9 +360,9 @@ func TestSetAndClearDeadlineMovePiles(t *testing.T) {
 
 func TestDeadlinePileOrderedByDate(t *testing.T) {
 	f := newFixture(t)
-	f.fake.Queue(ext("Late", extract.Date{Date: "2026-09-20", Confident: true})).Queue(srt("deadline", "x"))
+	f.fake.Queue(ext("Late", extract.Date{Date: "2026-09-20", Confident: true, Kind: when.KindDue})).Queue(srt("deadline", "x"))
 	f.svc.Dump(context.Background(), DumpInput{Text: "late"})
-	f.fake.Queue(ext("Soon", extract.Date{Date: "2026-09-06", Confident: true})).Queue(srt("deadline", "x"))
+	f.fake.Queue(ext("Soon", extract.Date{Date: "2026-09-06", Confident: true, Kind: when.KindDue})).Queue(srt("deadline", "x"))
 	f.svc.Dump(context.Background(), DumpInput{Text: "soon"})
 	b, _ := f.svc.Snapshot()
 	if b.Piles["deadline"][0].Title != "Soon" {
@@ -491,7 +495,7 @@ func TestDumpFailsLoudlyWhenDiskUnwritable(t *testing.T) {
 
 func TestPastConfidentDateIsOverdueDeadline(t *testing.T) {
 	f := newFixture(t)
-	f.fake.Queue(ext("Rent", extract.Date{Date: "2026-09-01", Confident: true})).Queue(srt("eventually", "x"))
+	f.fake.Queue(ext("Rent", extract.Date{Date: "2026-09-01", Confident: true, Kind: when.KindDue})).Queue(srt("deadline", "x"))
 	id, _ := f.svc.Dump(context.Background(), DumpInput{Text: "rent"})
 	it, _ := f.st.GetItem(id)
 	if it.Pile != "deadline" || it.Deadline == nil || it.Reason != "was due Tue 1 Sep" {
@@ -527,7 +531,7 @@ func TestReExtractionRespectsUserPlacement(t *testing.T) {
 
 func TestUserMoveOutOfDeadlineClearsDateAndIntoNeedsOne(t *testing.T) {
 	f := newFixture(t)
-	f.fake.Queue(ext("A", extract.Date{Date: "2026-09-10", Confident: true})).Queue(srt("deadline", "x"))
+	f.fake.Queue(ext("A", extract.Date{Date: "2026-09-10", Confident: true, Kind: when.KindDue})).Queue(srt("deadline", "x"))
 	id, _ := f.svc.Dump(context.Background(), DumpInput{Text: "a"})
 	if _, err := f.svc.Move(id, "eventually", ""); err != nil {
 		t.Fatal(err)
@@ -648,5 +652,128 @@ func TestSubscribeNeverBlocksUnderPublishStorm(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Subscribe blocked")
+	}
+}
+
+func TestMentionedSendDateIsNotADeadline(t *testing.T) {
+	f := newFixture(t)
+	f.fake.Queue(ext("Reply to Sam", extract.Date{Date: "2026-08-04", Confident: true, Kind: when.KindMentioned})).Queue(srt("eventually", "Sam asked a question"))
+	id, _ := f.svc.Dump(context.Background(), DumpInput{Text: "Sam, sent 4 Aug: can you check this?"})
+	it, _ := f.st.GetItem(id)
+	if it.Pile != "eventually" || it.Deadline != nil {
+		t.Fatalf("%+v", it)
+	}
+}
+
+func TestConfidentSorterContradictingDueDateGoesUnsorted(t *testing.T) {
+	f := newFixture(t)
+	f.fake.Queue(ext("Report", extract.Date{Date: "2026-09-10", Confident: true, Kind: when.KindDue})).Queue(srt("eventually", "the report is for reading only"))
+	id, _ := f.svc.Dump(context.Background(), DumpInput{Text: "report due 10 Sep?"})
+	it, _ := f.st.GetItem(id)
+	if it.Pile != "unsorted" || !strings.Contains(it.Reason, "due Thu 10 Sep") || !strings.Contains(it.Reason, "eventually") {
+		t.Fatalf("%+v", it)
+	}
+}
+
+func TestUnconfidentSorterDoesNotOverruleDueDate(t *testing.T) {
+	f := newFixture(t)
+	r := srt("eventually", "maybe just reading")
+	r.Confidence = 0.3
+	f.fake.Queue(ext("Report", extract.Date{Date: "2026-09-10", Confident: true, Kind: when.KindDue})).Queue(r)
+	id, _ := f.svc.Dump(context.Background(), DumpInput{Text: "report due 10 Sep"})
+	it, _ := f.st.GetItem(id)
+	if it.Pile != "deadline" || it.Reason != "due Thu 10 Sep" {
+		t.Fatalf("%+v", it)
+	}
+}
+
+func TestHintWinsOverConfidentSorter(t *testing.T) {
+	f := newFixture(t)
+	f.fake.Queue(ext("Report", extract.Date{Date: "2026-09-10", Confident: true, Kind: when.KindDue})).Queue(srt("deadline", "due on the 10th"))
+	id, _ := f.svc.Dump(context.Background(), DumpInput{Text: "report due 10 Sep #eventually"})
+	it, _ := f.st.GetItem(id)
+	if it.Pile != "eventually" {
+		t.Fatalf("%+v", it)
+	}
+}
+
+func TestLowConfidenceGoesUnsorted(t *testing.T) {
+	f := newFixture(t)
+	r := srt("eventually", "Sam might want this reviewed")
+	r.Confidence = 0.3
+	f.fake.Queue(ext("A")).Queue(r)
+	id, _ := f.svc.Dump(context.Background(), DumpInput{Text: "a"})
+	it, _ := f.st.GetItem(id)
+	if it.Pile != "unsorted" || it.Reason != "not confident (sorter said: Sam might want this reviewed)" {
+		t.Fatalf("%+v", it)
+	}
+}
+
+func TestOpenItemReasonsFeedSorterPriorReasons(t *testing.T) {
+	f := newFixture(t)
+	f.fake.Queue(ext("Gym")).Queue(srt("eventually", "Alex asked for this on Tuesday"))
+	f.svc.Dump(context.Background(), DumpInput{Text: "gym"})
+	f.fake.Queue(ext("Run")).Queue(srt("eventually", "like gym"))
+	f.svc.Dump(context.Background(), DumpInput{Text: "run"})
+	if p := f.fake.Requests[3].Prompt; !strings.Contains(p, `"Alex asked for this on Tuesday"`) {
+		t.Fatalf("open item's reason missing from sorter prompt:\n%s", p)
+	}
+}
+
+func TestRejectedReasonIsRetriedOnceWithFeedback(t *testing.T) {
+	f := newFixture(t)
+	stale := srt("eventually", "it's been sitting around a while")
+	stale.Evidence = "a while"
+	f.fake.Queue(ext("A")).Queue(stale).Queue(srt("eventually", "handle it this week"))
+	id, _ := f.svc.Dump(context.Background(), DumpInput{Text: "a"})
+	if len(f.fake.Requests) != 3 {
+		t.Fatalf("want extract + two sorter attempts, got %d", len(f.fake.Requests))
+	}
+	retry := f.fake.Requests[2].Prompt
+	if !strings.Contains(retry, "rejected: \"it's been sitting around a while\"") || !strings.Contains(retry, `- "it's been sitting around a while"`) {
+		t.Fatalf("retry prompt does not quote the rejected reason:\n%s", retry)
+	}
+	it, _ := f.st.GetItem(id)
+	if it.Pile != "eventually" || it.Reason != "handle it this week" {
+		t.Fatalf("%+v", it)
+	}
+}
+
+func TestSecondRejectionGoesUnsorted(t *testing.T) {
+	f := newFixture(t)
+	stale := srt("eventually", "it's been sitting around a while")
+	stale.Evidence = "a while"
+	f.fake.Queue(ext("A")).Queue(stale).Queue(stale)
+	id, _ := f.svc.Dump(context.Background(), DumpInput{Text: "a"})
+	it, _ := f.st.GetItem(id)
+	if it.Pile != "unsorted" || it.Reason != "unsure: sorter's reason was rejected twice" || it.Error != "" {
+		t.Fatalf("%+v", it)
+	}
+	if len(f.fake.Requests) != 3 {
+		t.Fatalf("want extract + two sorter attempts, got %d", len(f.fake.Requests))
+	}
+}
+
+func TestRejectedSorterLeavesDueDateToRules(t *testing.T) {
+	f := newFixture(t)
+	stale := srt("eventually", "old")
+	stale.Evidence = "a while"
+	f.fake.Queue(ext("Rent", extract.Date{Date: "2026-09-10", Confident: true, Kind: when.KindDue})).Queue(stale).Queue(stale)
+	id, _ := f.svc.Dump(context.Background(), DumpInput{Text: "rent"})
+	it, _ := f.st.GetItem(id)
+	if it.Pile != "deadline" || it.Reason != "due Thu 10 Sep" || it.Error != "" {
+		t.Fatalf("%+v", it)
+	}
+}
+
+// Doing it now does not contradict owing it by a date; the date is what the
+// board must show.
+func TestConfident2minAgreesWithDueDate(t *testing.T) {
+	f := newFixture(t)
+	f.fake.Queue(ext("Pay rent", extract.Date{Date: "2026-09-04", Confident: true, Kind: when.KindDue})).Queue(srt("2min", "one transfer"))
+	id, _ := f.svc.Dump(context.Background(), DumpInput{Text: "pay rent today"})
+	it, _ := f.st.GetItem(id)
+	if it.Pile != "deadline" || it.Reason != "due Fri 4 Sep" {
+		t.Fatalf("%+v", it)
 	}
 }

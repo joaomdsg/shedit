@@ -5,9 +5,8 @@
 Dump anything. Something else sorts it. Glance at the board to see what's on
 your plate. Nothing is ever lost.
 
-The idea lives in [IDEA.md](IDEA.md); the first slice in
-[SCOPE-v0.md](SCOPE-v0.md). The repo holds the core (daemon, pipeline, CLI)
-and the Omarchy bar widget under `plugin/`.
+The idea lives in [IDEA.md](IDEA.md). The repo holds the core (daemon,
+pipeline, CLI) and the Omarchy bar widget under `plugin/`.
 
 ## Run
 

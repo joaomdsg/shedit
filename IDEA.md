@@ -62,11 +62,12 @@ lose attachments later; either triggers re-extraction.
 
 ### Extraction
 
-What the system understood from the raw input: a title, a summary, any dates,
-people, links, actions, a rough size, and a confidence. Produced by something
-that can read what was dumped, whatever form it took. It knows nothing about
-piles or about the rest of the board. Extractions are versioned and kept, so the
-understanding can be redone and compared when the extractor improves.
+What the system understood from the raw input: a title, a summary, any dates
+(each due, event or mentioned), people, links, actions, a rough size, and a
+confidence. Produced by something that can read what was dumped, whatever form
+it took. It knows nothing about piles or about the rest of the board.
+Extractions are versioned and kept, so the understanding can be redone and
+compared when the extractor improves.
 
 ### Pile
 
@@ -74,19 +75,21 @@ Where an item sits. Four, fixed:
 
 - **2min** — do it right now. Not a pile, a queue: it should be empty by end of
   day. The test is "one sitting, no context switch", not "small".
-- **deadline** — has a date. Ordered by urgency.
+- **deadline** — has a due date. Ordered by urgency.
 - **eventually** — no date, no rush.
-- **unsorted** — the sorter wasn't confident. You decide.
+- **unsorted** — the sorter was unsure, disagreed with a due date, or wanted a
+  deadline with no date to back it. You decide.
 
 ### Sorter
 
 Takes an extraction plus a compact view of the board plus your recent
-corrections, and returns a pile, an estimate, tags, and a one-line reason. May
-also propose that an item relates to another. Works from the extraction, never
-from the raw input. Runs often.
+corrections, and returns a pile, a confidence, an estimate, tags, and a one-line
+reason. May also propose that an item relates to another. Works from the
+extraction, never from the raw input. Runs often.
 
-Hard rules run before the sorter and override it: an explicit pile hint from you
-always wins; a confidently parsed future date always means `deadline`.
+Hard rules run before the sorter: an explicit pile hint from you always wins; a
+confidently parsed due date means `deadline`, unless a confident sorter calls
+it `eventually`, which sends the item to `unsorted`.
 
 ### Move
 
@@ -155,3 +158,39 @@ until they hurt.
 
 Test-first. Nothing lands without a failing test guiding the way, including tiny
 fixes.
+
+## Revisions after first production use
+
+Eighteen real items, unanswered mail and stale GitHub work, went in as one
+batch. What that exposed, and what is now decided.
+
+### A date is not a deadline
+
+An email sent on 4 Aug produced an item "was due Tue 4 Aug". That is a lie the
+board tells you every time you glance at it, which is the one thing the board
+must never do.
+
+Decided: the extractor labels every date it finds `due`, `event`, or
+`mentioned`. Only `due` reaches the deadline rule, past or future. Other dates
+are context the sorter may read and the board does not show.
+
+### Age is a nudge, never a reason
+
+Sorting the batch produced ten reasons that were the same sentence with a
+different number in it. A reason that could have been written without reading
+the item is not a reason; principle 5 dies quietly there.
+
+Decided: a reason names something specific, a person, an action, a date or a
+link, and the sorter must point at it in what was extracted. It sees the reasons
+on other open items and may not repeat one. A rejected reason gets one retry;
+a second rejection sends the item to `unsorted`.
+
+### The sorter no longer chooses `unsorted`
+
+Two items reached `unsorted` carrying confident rationales. If the sorter can
+argue for a placement it was not unsure, and `unsorted` becomes a fifth pile by
+the back door.
+
+Decided: the sorter no longer chooses `unsorted`. It returns a pile and a
+confidence. Low confidence makes an item unsorted, and so does a confident
+sorter calling a due item `eventually`.

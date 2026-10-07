@@ -43,7 +43,7 @@ func setup(t *testing.T) (Client, *model.Fake, *store.Store) {
 }
 
 func queueItem(f *model.Fake, title, pile string) {
-	f.Queue(extract.Result{Title: title, Summary: "s"}).Queue(sorter.Result{Pile: pile, Reason: "r", Tags: []string{}})
+	f.Queue(extract.Result{Title: title, Summary: "s", Actions: []string{"file it"}}).Queue(sorter.Result{Pile: pile, Reason: "r", Tags: []string{}, Confidence: 0.9, Evidence: "file it"})
 }
 
 func TestDumpBoardAndStatus(t *testing.T) {
@@ -101,7 +101,7 @@ func TestErrorsComeBackAsErrors(t *testing.T) {
 
 func TestAllActions(t *testing.T) {
 	c, f, st := setup(t)
-	queueItem(f, "A", "unsorted")
+	queueItem(f, "A", "2min")
 	var id IDArgs
 	c.Call("dump", DumpArgs{Text: "a"}, &id)
 

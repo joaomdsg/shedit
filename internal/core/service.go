@@ -300,16 +300,18 @@ func (s *Service) runPipeline(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	sr, sresp, err := sorter.Run(ctx, s.model, s.opts.SortModel, in, s.now())
-	s.addCost(sresp)
-	if err != nil {
-		if !dec.Decided() {
-			return fmt.Errorf("sort: %w", err)
-		}
+	sr, err := s.runSorter(ctx, in)
+	switch {
+	case err != nil && dec.Decided():
 		// The rules already placed it; losing estimate and tags is not
 		// worth failing the item over.
 		s.opts.Logger.Printf("item %s: sorter: %v", id, err)
 		return s.placeByRules(id, dec)
+	case sorter.Retryable(err):
+		s.opts.Logger.Printf("item %s: sorter: %v", id, err)
+		return s.place(id, store.PileUnsorted, "unsure: sorter's reason was rejected twice", nil, store.ActorSystem)
+	case err != nil:
+		return fmt.Errorf("sort: %w", err)
 	}
 	if err := s.store.SetSorting(id, store.Sorting{Estimate: sr.Estimate, Tags: sr.Tags, Priority: sr.Priority}); err != nil {
 		return err
@@ -321,6 +323,24 @@ func (s *Service) runPipeline(ctx context.Context, id string) error {
 	}
 	pile, reason := choosePile(sr, dec)
 	return s.place(id, pile, reason, dec.Deadline, store.ActorSystem)
+}
+
+// runSorter retries once when the model's output was rejected, passing the
+// rejection as feedback so the retry is not the same prompt.
+func (s *Service) runSorter(ctx context.Context, in sorter.Input) (sorter.Result, error) {
+	sr, resp, err := sorter.Run(ctx, s.model, s.opts.SortModel, in, s.now())
+	s.addCost(resp)
+	if !sorter.Retryable(err) {
+		return sr, err
+	}
+	in.RetryFeedback = err.Error()
+	if sr.Reason != "" {
+		in.PriorReasons = append(in.PriorReasons, sr.Reason)
+		in.RetryFeedback = fmt.Sprintf("%q: %v", sr.Reason, err)
+	}
+	sr, resp, err = sorter.Run(ctx, s.model, s.opts.SortModel, in, s.now())
+	s.addCost(resp)
+	return sr, err
 }
 
 func (s *Service) extractStage(ctx context.Context, id string) (res extract.Result, userText string, err error) {
@@ -363,9 +383,18 @@ func (s *Service) placeByRules(id string, dec rules.Decision) error {
 }
 
 func choosePile(sr sorter.Result, dec rules.Decision) (pile, reason string) {
+	confident := sr.Confidence >= sorter.UnsortedConfidence
 	switch {
+	case dec.Hint:
+		return dec.Pile, dec.Reason
+	// Only eventually contradicts a due date; 2min means do it now, which
+	// a date does not argue against.
+	case dec.Decided() && confident && sr.Pile == store.PileEventually:
+		return store.PileUnsorted, fmt.Sprintf("%s, but sorter says %s: %s", dec.Reason, sr.Pile, sr.Reason)
 	case dec.Decided():
 		return dec.Pile, dec.Reason
+	case !confident:
+		return store.PileUnsorted, "not confident (sorter said: " + sr.Reason + ")"
 	case sr.Pile == store.PileDeadline && dec.Deadline == nil:
 		// The sorter may not invent a deadline the extractor did not find.
 		return store.PileUnsorted, "sorter wanted deadline but found no date: " + sr.Reason
@@ -451,6 +480,9 @@ func (s *Service) sorterInput(id string, res extract.Result, userText string) (s
 		titles[it.ID] = bi.Title
 		if it.ID != id {
 			in.Board = append(in.Board, sorter.BoardItem{ID: it.ID, Pile: it.Pile, Title: bi.Title, Deadline: bi.DeadlineLocal})
+			if it.Reason != "" {
+				in.PriorReasons = append(in.PriorReasons, it.Reason)
+			}
 		}
 	}
 	moves, err := s.store.RecentUserMoves(s.opts.Corrections)

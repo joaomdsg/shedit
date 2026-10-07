@@ -3,6 +3,8 @@ package rules
 import (
 	"testing"
 	"time"
+
+	"github.com/joaomdsg/shedit/internal/when"
 )
 
 var lisbon = mustLoad("Europe/Lisbon")
@@ -16,8 +18,8 @@ func mustLoad(name string) *time.Location {
 	return l
 }
 
-func timed(t time.Time) When  { return When{Time: t} }
-func allDay(t time.Time) When { return When{Time: t, AllDay: true} }
+func timed(t time.Time) When  { return When{Time: t, Kind: when.KindDue} }
+func allDay(t time.Time) When { return When{Time: t, AllDay: true, Kind: when.KindDue} }
 func day(d int) time.Time     { return time.Date(2026, 9, d, 0, 0, 0, 0, lisbon) }
 
 func TestPileHint(t *testing.T) {
@@ -55,7 +57,7 @@ func TestStripHintKeepsEverythingElse(t *testing.T) {
 
 func TestHintWinsButDateIsKept(t *testing.T) {
 	d := Apply(Input{Text: "call mom #eventually", Dates: []When{allDay(day(7))}}, now)
-	if d.Pile != "eventually" || d.Deadline == nil || d.Deadline.Time.Day() != 7 {
+	if d.Pile != "eventually" || !d.Hint || d.Deadline == nil || d.Deadline.Time.Day() != 7 {
 		t.Fatalf("%+v", d)
 	}
 }
@@ -98,6 +100,37 @@ func TestAllDayTodayIsDue(t *testing.T) {
 
 func TestNothingLeavesItToSorter(t *testing.T) {
 	if d := Apply(Input{Text: "hmm"}, now); d.Decided() || d.Deadline != nil {
+		t.Fatalf("%+v", d)
+	}
+}
+
+func TestDatePileIsNotAHint(t *testing.T) {
+	if d := Apply(Input{Dates: []When{allDay(day(7))}}, now); d.Pile != "deadline" || d.Hint {
+		t.Fatalf("%+v", d)
+	}
+}
+
+// A send date in the body is a fact about the email, not something owed.
+func TestMentionedDateNeverBecomesDeadline(t *testing.T) {
+	sent := When{Time: day(1), AllDay: true, Kind: when.KindMentioned}
+	if d := Apply(Input{Dates: []When{sent}}, now); d.Decided() || d.Deadline != nil {
+		t.Fatalf("%+v", d)
+	}
+}
+
+func TestEventDateNeverBecomesDeadline(t *testing.T) {
+	future := When{Time: day(9), AllDay: true, Kind: when.KindEvent}
+	if d := Apply(Input{Dates: []When{future}}, now); d.Decided() || d.Deadline != nil {
+		t.Fatalf("%+v", d)
+	}
+}
+
+func TestDueDateWinsOverMentionedAndEvent(t *testing.T) {
+	due := When{Time: day(11), AllDay: true, Kind: when.KindDue}
+	mentioned := When{Time: day(5), AllDay: true, Kind: when.KindMentioned}
+	event := When{Time: day(6), AllDay: true, Kind: when.KindEvent}
+	d := Apply(Input{Dates: []When{mentioned, event, due}}, now)
+	if d.Pile != "deadline" || d.Deadline == nil || d.Deadline.Time.Day() != 11 {
 		t.Fatalf("%+v", d)
 	}
 }

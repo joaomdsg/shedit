@@ -1,6 +1,6 @@
 // Package rules holds the hard rules that run before the sorter and override
 // it: an explicit pile hint from the user always wins; a confidently parsed
-// date always means deadline.
+// due date means deadline. Event and mentioned dates never do.
 package rules
 
 import (
@@ -47,10 +47,13 @@ type Input struct {
 
 type Decision struct {
 	Pile string
-	// Deadline is set whenever a confident date exists, even when the pile
+	// Deadline is set whenever a confident due date exists, even when the pile
 	// was decided by a hint or the date has passed. Overdue is still a fact.
 	Deadline *When
 	Reason   string
+	// Hint marks a pile the user chose with #pile. Core keeps it even
+	// against a confident sorter; a pile from a due date it may overrule.
+	Hint bool
 }
 
 func (d Decision) Decided() bool { return d.Pile != "" }
@@ -61,7 +64,7 @@ func Apply(in Input, now time.Time) Decision {
 	var d Decision
 	d.Deadline = pick(in.Dates, now)
 	if hint := PileHint(in.Text); hint != "" {
-		d.Pile, d.Reason = hint, "you said #"+hint
+		d.Pile, d.Reason, d.Hint = hint, "you said #"+hint, true
 		return d
 	}
 	if d.Deadline != nil {
@@ -79,6 +82,9 @@ func pick(dates []When, now time.Time) *When {
 	var future, past *When
 	for i := range dates {
 		d := &dates[i]
+		if d.Kind != when.KindDue {
+			continue
+		}
 		switch {
 		case d.Future(now) && (future == nil || d.Before(*future)):
 			future = d

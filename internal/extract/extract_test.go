@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/joaomdsg/shedit/internal/model"
+	"github.com/joaomdsg/shedit/internal/when"
 )
 
 var lisbon = mustLoad("Europe/Lisbon")
@@ -36,6 +37,16 @@ func TestPromptIncludesEveryAttachmentAndGuardsAgainstInjection(t *testing.T) {
 		if strings.Contains(p, leak) {
 			t.Errorf("extractor prompt names a pile: %q", leak)
 		}
+	}
+}
+
+func TestPromptAndSchemaSeparateDueFromMentioned(t *testing.T) {
+	// An email's send date once became a deadline.
+	if p := Prompt(nil, now); !strings.Contains(p, "sent on is mentioned, never due") {
+		t.Errorf("prompt lacks the send-date negative example:\n%s", p)
+	}
+	if !strings.Contains(string(Schema), `"enum":["due","event","mentioned"]`) {
+		t.Errorf("schema does not constrain date kind:\n%s", Schema)
 	}
 }
 
@@ -74,8 +85,8 @@ func TestRunRejectsEmptyTitleAndPropagatesErrors(t *testing.T) {
 
 func TestParsedDatesOnlyConfidentInLocation(t *testing.T) {
 	r := Result{Dates: []Date{
-		{Date: "2026-09-10", Confident: true},
-		{Date: "2026-09-12T15:00:00Z", Confident: true},
+		{Date: "2026-09-10", Confident: true, Kind: when.KindDue},
+		{Date: "2026-09-12T15:00:00Z", Confident: true, Kind: when.KindEvent},
 		{Date: "2026-09-13T15:00:00", Confident: true},
 		{Date: "2026-09-14T09:30", Confident: true},
 		{Date: "2026-09-20", Confident: false},
@@ -86,11 +97,11 @@ func TestParsedDatesOnlyConfidentInLocation(t *testing.T) {
 	if len(whens) != 4 {
 		t.Fatalf("%v", whens)
 	}
-	if !whens[0].AllDay || whens[0].Time.Day() != 10 || whens[0].Time.Location() != ny {
+	if !whens[0].AllDay || whens[0].Time.Day() != 10 || whens[0].Time.Location() != ny || whens[0].Kind != when.KindDue {
 		t.Fatalf("all-day: %+v", whens[0])
 	}
 	// An explicit UTC instant is converted, not reinterpreted.
-	if whens[1].AllDay || whens[1].Time.Hour() != 11 || whens[1].Time.Location() != ny {
+	if whens[1].AllDay || whens[1].Time.Hour() != 11 || whens[1].Time.Location() != ny || whens[1].Kind != when.KindEvent {
 		t.Fatalf("rfc3339: %+v", whens[1])
 	}
 	if whens[2].AllDay || whens[2].Time.Hour() != 15 || whens[2].Time.Day() != 13 {

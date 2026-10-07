@@ -56,7 +56,7 @@ esac
 }
 
 const extractOut = `{"type":"result","is_error":false,"result":"","structured_output":{"title":"Buy milk","summary":"Get milk","dates":[],"people":[],"links":[],"actions":["buy"],"size_guess":"tiny","confidence":0.9},"total_cost_usd":0.01}`
-const sortOut = `{"type":"result","is_error":false,"result":"","structured_output":{"pile":"2min","estimate":"5m","tags":["home"],"reason":"quick errand","related_id":"","related_reason":""},"total_cost_usd":0.002}`
+const sortOut = `{"type":"result","is_error":false,"result":"","structured_output":{"pile":"2min","estimate":"5m","tags":["home"],"reason":"quick errand","confidence":0.9,"evidence":"buy","related_id":"","related_reason":""},"total_cost_usd":0.002}`
 
 type harness struct {
 	t    *testing.T

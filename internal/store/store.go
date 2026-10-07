@@ -203,7 +203,7 @@ func Open(path string) (*Store, error) {
 	}
 	if have > schemaVersion {
 		db.Close()
-		return nil, fmt.Errorf("database schema v%d is newer than this build (v%d)", have, schemaVersion)
+		return nil, fmt.Errorf("database schema version %d is newer than this build supports (%d)", have, schemaVersion)
 	}
 	if have >= 1 && have < 2 {
 		if err := migratePriority(db); err != nil {
@@ -222,7 +222,7 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
-// migratePriority adds the priority column to a v1 database and backfills
+// migratePriority adds the priority column to a database that lacks it and backfills
 // existing rows from what they already have: a deadline or a small estimate
 // implies urgency; nothing at all implies none.
 func migratePriority(db *sql.DB) error {

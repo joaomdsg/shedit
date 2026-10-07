@@ -1,4 +1,4 @@
-// Package when models a deadline as wall-clock time in the user's zone,
+// Package when models a date as wall-clock time in the user's zone,
 // optionally all-day. All-day dates compare and render by calendar date so
 // they never shift across zones or DST.
 package when
@@ -10,9 +10,19 @@ import (
 	"time"
 )
 
+// Kind says what a date means to the user. Only KindDue makes a deadline.
+type Kind string
+
+const (
+	KindDue       Kind = "due"
+	KindEvent     Kind = "event"
+	KindMentioned Kind = "mentioned"
+)
+
 type When struct {
 	Time   time.Time
 	AllDay bool
+	Kind   Kind
 }
 
 func (w When) Local() string {
