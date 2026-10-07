@@ -347,15 +347,19 @@ func (s *Service) runPipeline(ctx context.Context, id string) error {
 			return err
 		}
 	}
-	pile, reason := sr.Pile, sr.Reason
+	pile, reason := choosePile(sr, dec)
+	return s.place(id, pile, reason, dec.Deadline, store.ActorSystem)
+}
+
+func choosePile(sr sorter.Result, dec rules.Decision) (pile, reason string) {
 	switch {
 	case dec.Decided():
-		pile, reason = dec.Pile, dec.Reason
-	case pile == store.PileDeadline && dec.Deadline == nil:
+		return dec.Pile, dec.Reason
+	case sr.Pile == store.PileDeadline && dec.Deadline == nil:
 		// The sorter may not invent a deadline the extractor did not find.
-		pile, reason = store.PileUnsorted, "sorter wanted deadline but found no date: "+reason
+		return store.PileUnsorted, "sorter wanted deadline but found no date: " + sr.Reason
 	}
-	return s.place(id, pile, reason, dec.Deadline, store.ActorSystem)
+	return sr.Pile, sr.Reason
 }
 
 // place is the one place the system moves an item. It keeps the invariant
