@@ -449,41 +449,47 @@ func (s *Store) DeleteItem(id string) error {
 	return nil
 }
 
+const attachmentCols = `id,item_id,kind,name,path,sha256,size,created_at`
+
+func scanAttachment(sc interface{ Scan(...any) error }) (Attachment, error) {
+	var a Attachment
+	var created string
+	if err := sc.Scan(&a.ID, &a.ItemID, &a.Kind, &a.Name, &a.Path, &a.SHA256, &a.Size, &created); err != nil {
+		return a, err
+	}
+	a.CreatedAt = parseTime(created)
+	return a, nil
+}
+
 func (s *Store) AddAttachment(itemID string, a Attachment) (Attachment, error) {
 	a.ID = newID()
 	a.ItemID = itemID
 	a.CreatedAt = now()
-	_, err := s.db.Exec(`INSERT INTO attachments (id,item_id,kind,name,path,sha256,size,created_at) VALUES (?,?,?,?,?,?,?,?)`,
+	_, err := s.db.Exec(`INSERT INTO attachments (`+attachmentCols+`) VALUES (?,?,?,?,?,?,?,?)`,
 		a.ID, a.ItemID, a.Kind, a.Name, a.Path, a.SHA256, a.Size, fmtTime(a.CreatedAt))
 	return a, err
 }
 
 func (s *Store) GetAttachment(id string) (Attachment, error) {
-	var a Attachment
-	var created string
-	err := s.db.QueryRow(`SELECT id,item_id,kind,name,path,sha256,size,created_at FROM attachments WHERE id=?`, id).
-		Scan(&a.ID, &a.ItemID, &a.Kind, &a.Name, &a.Path, &a.SHA256, &a.Size, &created)
+	a, err := scanAttachment(s.db.QueryRow(`SELECT `+attachmentCols+` FROM attachments WHERE id=?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}
-	a.CreatedAt = parseTime(created)
 	return a, err
 }
 
 func (s *Store) ListAttachments(itemID string) ([]Attachment, error) {
-	rows, err := s.db.Query(`SELECT id,item_id,kind,name,path,sha256,size,created_at FROM attachments WHERE item_id=? ORDER BY rowid`, itemID)
+	rows, err := s.db.Query(`SELECT `+attachmentCols+` FROM attachments WHERE item_id=? ORDER BY rowid`, itemID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []Attachment
 	for rows.Next() {
-		var a Attachment
-		var created string
-		if err := rows.Scan(&a.ID, &a.ItemID, &a.Kind, &a.Name, &a.Path, &a.SHA256, &a.Size, &created); err != nil {
+		a, err := scanAttachment(rows)
+		if err != nil {
 			return nil, err
 		}
-		a.CreatedAt = parseTime(created)
 		out = append(out, a)
 	}
 	return out, rows.Err()
