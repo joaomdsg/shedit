@@ -59,12 +59,13 @@ the panel's count chips and "+N more" links, which shell out to
 `omarchy-shell shell toggle jgonc.shedit '{"pile":"…"}'`, and it runs its
 own `shedit watch` process, separate from the panel's.
 
-Title and summary render read-only with `http(s)` and `www.` URLs
-autolinked; an Edit button swaps in the editable fields. `url` attachment
-rows show and open their real URL (the attachment's name is always
-`link.txt`; the URL is the blob content). Host-labelled chips under the
-summary cover stored URLs the summary text doesn't already mention. Links
-open via `xdg-open`, restricted to `http(s)`.
+Title, summary and deadline render read-only, with `http(s)` and `www.` URLs
+autolinked. Edit, in the controls row, turns all three into inputs and the
+row into Save and Cancel: Enter saves, Shift+Enter adds a summary newline,
+Escape cancels. `url` attachment rows show and open their real URL (the
+attachment's name is always `link.txt`; the URL is the blob content).
+Host-labelled chips under the summary cover stored URLs the summary text
+doesn't already mention. Links open via `xdg-open`, restricted to `http(s)`.
 
 ## Test
 

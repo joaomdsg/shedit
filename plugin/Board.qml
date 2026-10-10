@@ -631,7 +631,10 @@ Item {
     readonly property var unreachedUrls: Model.unreachedUrlAttachments(detail.item, root.snippetCache)
     spacing: Style.space(10)
 
-    onItemChanged: { syncFields(); editing = false }
+    // Every `watch` push hands in a fresh object for the same item; only a
+    // different item may drop an edit in progress.
+    readonly property string itemId: detail.item ? (detail.item.id || "") : ""
+    onItemIdChanged: { syncFields(); editing = false }
     Component.onCompleted: syncFields()
 
     function syncFields() {
@@ -641,70 +644,60 @@ Item {
       deadlineField.text = detail.item.deadline_local || ""
     }
 
-    function commitTitle() {
-      if (!detail.item || !detail.item.id) return
-      var t = titleField.text.trim()
-      if (t !== "" && t !== (detail.item.title || "")) root.run(["edit", detail.item.id, "-title", t])
-      detail.editing = false
-    }
-    function revertTitle() {
-      titleField.text = detail.item ? (detail.item.title || "") : ""
-      detail.editing = false
+    function startEdit() {
+      syncFields()
+      detail.editing = true
+      titleField.forceActiveFocus()
     }
 
-    function commitSummary() {
-      if (!detail.item || !detail.item.id) return
-      var s = summaryField.text
-      if (s !== (detail.item.summary || "")) root.run(["edit", detail.item.id, "-summary", s])
-      detail.editing = false
-    }
-    function revertSummary() {
-      summaryField.text = detail.item ? (detail.item.summary || "") : ""
-      detail.editing = false
-    }
-
-    function commitDeadline() {
+    // An invalid deadline keeps the fields open (the field shows red).
+    function save() {
       if (!detail.item || !detail.item.id) return
       var d = deadlineField.text.trim()
       if (!Model.validDeadline(d)) return
+      var argv = ["edit", detail.item.id]
+      var t = titleField.text.trim()
+      if (t !== "" && t !== (detail.item.title || "")) argv.push("-title", t)
+      if (summaryField.text !== (detail.item.summary || "")) argv.push("-summary", summaryField.text)
+      if (argv.length > 2) root.run(argv)
       if (d !== (detail.item.deadline_local || "")) root.run(d === "" ? ["deadline", detail.item.id] : ["deadline", detail.item.id, d])
+      detail.editing = false
+      keyCatcher.forceActiveFocus()
     }
-    function revertDeadline() { deadlineField.text = detail.item ? (detail.item.deadline_local || "") : "" }
+
+    function cancel() {
+      syncFields()
+      detail.editing = false
+      keyCatcher.forceActiveFocus()
+    }
+
+    // Enter saves and Escape cancels from any field; Shift+Enter is a newline
+    // in the summary.
+    function handleKeys(event) {
+      if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !(event.modifiers & Qt.ShiftModifier)) {
+        save(); event.accepted = true
+      } else if (event.key === Qt.Key_Escape) {
+        cancel(); event.accepted = true
+      }
+    }
 
     // ---- Title ----
-    Row {
-      width: parent.width
-      spacing: Style.space(8)
+    Text {
       visible: !detail.editing
+      width: parent.width
+      textFormat: Text.RichText
+      text: Model.linkifyText(detail.item.title || "")
+      color: root.foreground
+      linkColor: Color.accent
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.heading
+      onLinkActivated: function(link) { root.openUrl(link) }
 
-      Text {
-        id: titleText
-        width: parent.width - editButton.width - parent.spacing
-        textFormat: Text.RichText
-        text: Model.linkifyText(detail.item.title || "")
-        color: root.foreground
-        linkColor: Color.accent
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.heading
-        onLinkActivated: function(link) { root.openUrl(link) }
-
-        MouseArea {
-          anchors.fill: parent
-          hoverEnabled: true
-          acceptedButtons: Qt.NoButton
-          cursorShape: containsMouse && parent.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor
-        }
-      }
-
-      PanelActionButton {
-        id: editButton
-        iconText: Model.ICON.edit
-        tooltipText: "Edit"
-        foreground: root.dim
-        fontFamily: root.fontFamily
-        fontSize: Style.font.bodySmall
-        anchors.verticalCenter: titleText.verticalCenter
-        onClicked: { detail.editing = true; titleField.forceActiveFocus() }
+      MouseArea {
+        anchors.fill: parent
+        hoverEnabled: true
+        acceptedButtons: Qt.NoButton
+        cursorShape: containsMouse && parent.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor
       }
     }
 
@@ -716,14 +709,7 @@ Item {
       foreground: root.foreground
       font.family: root.fontFamily
       font.pixelSize: Style.font.heading
-      Keys.onPressed: function(event) {
-        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-          detail.commitTitle(); keyCatcher.forceActiveFocus(); event.accepted = true
-        } else if (event.key === Qt.Key_Escape) {
-          detail.revertTitle(); keyCatcher.forceActiveFocus(); event.accepted = true
-        }
-      }
-      onActiveFocusChanged: if (!activeFocus) detail.commitTitle()
+      Keys.onPressed: function(event) { detail.handleKeys(event) }
     }
 
     // ---- Summary ----
@@ -801,20 +787,14 @@ Item {
       font.pixelSize: Style.font.body
       background: null
       padding: Style.space(2)
-      Keys.onPressed: function(event) {
-        if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !(event.modifiers & Qt.ShiftModifier)) {
-          detail.commitSummary(); keyCatcher.forceActiveFocus(); event.accepted = true
-        } else if (event.key === Qt.Key_Escape) {
-          detail.revertSummary(); keyCatcher.forceActiveFocus(); event.accepted = true
-        }
-      }
-      onActiveFocusChanged: if (!activeFocus) detail.commitSummary()
+      Keys.onPressed: function(event) { detail.handleKeys(event) }
     }
 
     // ---- Deadline ----
     Row {
       width: parent.width
       spacing: Style.space(6)
+      visible: detail.editing || !!detail.item.deadline_local
       Text {
         textFormat: Text.PlainText
         text: "DUE"
@@ -825,21 +805,24 @@ Item {
         font.letterSpacing: 1
         anchors.verticalCenter: parent.verticalCenter
       }
+      Text {
+        visible: !detail.editing
+        textFormat: Text.PlainText
+        text: detail.item.deadline_local || ""
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        anchors.verticalCenter: parent.verticalCenter
+      }
       TextField {
         id: deadlineField
+        visible: detail.editing
         width: parent.width - Style.space(54)
         placeholderText: "YYYY-MM-DD or YYYY-MM-DD HH:MM, empty clears"
         foreground: Model.validDeadline(text) ? root.foreground : root.urgent
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
-        Keys.onPressed: function(event) {
-          if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            detail.commitDeadline(); keyCatcher.forceActiveFocus(); event.accepted = true
-          } else if (event.key === Qt.Key_Escape) {
-            detail.revertDeadline(); keyCatcher.forceActiveFocus(); event.accepted = true
-          }
-        }
-        onActiveFocusChanged: if (!activeFocus) detail.commitDeadline()
+        Keys.onPressed: function(event) { detail.handleKeys(event) }
       }
     }
 
@@ -898,18 +881,42 @@ Item {
       spacing: Style.space(8)
 
       Button {
+        visible: detail.editing
+        text: "Save"
+        foreground: Color.accent
+        fontSize: Style.font.bodySmall
+        onClicked: detail.save()
+      }
+      Button {
+        visible: detail.editing
+        text: "Cancel"
+        foreground: root.foreground
+        fontSize: Style.font.bodySmall
+        onClicked: detail.cancel()
+      }
+      Button {
+        visible: !detail.editing
+        text: "Edit"
+        foreground: root.foreground
+        fontSize: Style.font.bodySmall
+        onClicked: detail.startEdit()
+      }
+      Button {
+        visible: !detail.editing
         text: root.isDoneItem(detail.item.id) ? "Reopen" : "Done"
         foreground: root.foreground
         fontSize: Style.font.bodySmall
         onClicked: root.run([root.isDoneItem(detail.item.id) ? "reopen" : "done", detail.item.id])
       }
       Button {
+        visible: !detail.editing
         text: "Re-extract"
         foreground: root.foreground
         fontSize: Style.font.bodySmall
         onClicked: root.run(["retry", detail.item.id])
       }
       Button {
+        visible: !detail.editing
         text: root.confirmDeleteId === detail.item.id ? "Confirm delete?" : "Delete"
         foreground: root.confirmDeleteId === detail.item.id ? root.urgent : root.foreground
         fontSize: Style.font.bodySmall

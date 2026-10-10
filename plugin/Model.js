@@ -9,7 +9,6 @@ var ICON = {
   unsorted:   "󰘥", // nf-md-help_circle_outline U+F0625
   done:       "󰄬", // nf-md-check            U+F012C
   reopen:     "󰕌", // nf-md-undo             U+F054C
-  edit:       "󰏫", // nf-md-pencil           U+F03EB
   trash:      "󰆴", // nf-md-delete           U+F01B4
   retry:      "󰑐", // nf-md-refresh          U+F0450
   attach:     "󰏢", // nf-md-paperclip        U+F03E2
